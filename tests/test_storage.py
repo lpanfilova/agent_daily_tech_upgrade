@@ -50,7 +50,7 @@ def test_migrations_are_repeatable_and_detect_changed_checksum(database):
     with repository(database) as repo:
         with pytest.raises(StorageError, match="not initialized"):
             repo.require_migrations()
-        assert repo.migrate() == ["001_initial.sql"]
+        assert repo.migrate() == ["001_initial.sql", "002_telegram.sql"]
         assert repo.migrate() == []
         repo.require_migrations()
         repo.connection.execute("UPDATE schema_migrations SET checksum = 'changed'")

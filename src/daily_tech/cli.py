@@ -18,6 +18,9 @@ from .models import RunReport
 from .pipeline import run_pipeline, save_report
 from .retrieval import Fetcher
 from .storage import Repository, StorageError
+from .telegram import TelegramClient, TelegramError, TelegramSettings
+from .telegram_service import TelegramService
+from .telegram_storage import TelegramStore
 
 
 def parser() -> argparse.ArgumentParser:
@@ -50,10 +53,43 @@ def parser() -> argparse.ArgumentParser:
     actions.add_argument("--history", action="store_true", help="Show the latest 20 runs")
     actions.add_argument("--show-run", type=UUID, help="Print a stored brief by run ID")
     actions.add_argument("--import-run", type=Path, help="Import an earlier run.json, idempotently")
+    actions.add_argument(
+        "--telegram-check", action="store_true", help="Verify bot identity without sending messages"
+    )
+    actions.add_argument(
+        "--telegram-listen", action="store_true", help="Listen locally for Telegram commands"
+    )
+    actions.add_argument(
+        "--telegram-poll-once",
+        action="store_true",
+        help="Process one batch of pending Telegram updates",
+    )
+    actions.add_argument(
+        "--send-brief",
+        nargs="?",
+        const="latest",
+        metavar="RUN_UUID",
+        help="Deliver a stored brief; defaults to latest",
+    )
+    actions.add_argument(
+        "--telegram-deliveries", action="store_true", help="Show recent Telegram delivery statuses"
+    )
     return result
 
 
 async def execute(args: argparse.Namespace) -> int:
+    if args.telegram_check:
+        settings = TelegramSettings.from_env(require_chat=False)
+        async with httpx.AsyncClient() as http:
+            bot = await TelegramClient(http, settings).get_me()
+        print(f"Connected to @{bot.get('username', '')} (bot ID {bot['id']}). No message sent.")
+        return 0
+    telegram_action = (
+        args.telegram_listen
+        or args.telegram_poll_once
+        or args.send_brief
+        or args.telegram_deliveries
+    )
     db_action = (
         args.db_migrate
         or args.show_profile
@@ -61,6 +97,7 @@ async def execute(args: argparse.Namespace) -> int:
         or args.history
         or args.show_run
         or args.import_run
+        or telegram_action
     )
     if args.no_db:
         if db_action:
@@ -77,6 +114,8 @@ async def execute(args: argparse.Namespace) -> int:
             )
             return 0
         repo.require_migrations()
+        if telegram_action:
+            return await execute_telegram(args, repo)
         if args.show_profile:
             profile = repo.get_profile()
             print(profile.model_dump_json(indent=2) if profile else "No profile stored yet.")
@@ -115,6 +154,38 @@ async def execute(args: argparse.Namespace) -> int:
                         print(f"Run {report.run_id} is already stored.")
                 return 0
             return await execute_run(args, repo)
+
+
+async def execute_telegram(args, repo):
+    store = TelegramStore(repo)
+    if args.telegram_deliveries:
+        for delivery in store.list_deliveries():
+            print(
+                f"{delivery['delivery_id']}  {delivery['status']}  "
+                f"{delivery['confirmed_parts']}/{delivery['parts']} confirmed parts  "
+                f"run={delivery['run_id'] or 'command response'}"
+            )
+        return 0
+    settings = TelegramSettings.from_env()
+    async with httpx.AsyncClient() as http:
+        client = TelegramClient(http, settings)
+        bot = await client.get_me()
+        service = TelegramService(client, store, bot)
+        if args.send_brief:
+            report = (
+                repo.latest_report()
+                if args.send_brief == "latest"
+                else repo.get_report(UUID(args.send_brief))
+            )
+            if report is None:
+                raise StorageError("No saved reading brief is ready to send")
+            result = await service.send_brief(report)
+            print(f"Telegram delivery {result.delivery_id}: {result.status}")
+            if result.status == "uncertain":
+                print("Delivery may already be visible in Telegram; held without automatic resend.")
+            return 0 if result.status in ("sent", "already_sent") else 2
+        await service.listen(once=args.telegram_poll_once)
+    return 0
 
 
 async def execute_run(args: argparse.Namespace, repo: Repository | None = None) -> int:
@@ -181,6 +252,9 @@ def main() -> None:
         code = 1
     except StorageError as exc:
         print(f"Database error: {exc}", file=sys.stderr)
+        code = 1
+    except TelegramError as exc:
+        print(f"Telegram error: {exc}", file=sys.stderr)
         code = 1
     except psycopg.Error:
         print(

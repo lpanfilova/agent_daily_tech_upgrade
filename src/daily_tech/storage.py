@@ -250,3 +250,18 @@ class Repository:
         if not row or row["brief"] is None:
             raise StorageError("No completed brief found for that run ID")
         return row["brief"]
+
+    def get_report(self, run_id: UUID) -> RunReport:
+        row = self.connection.execute(
+            "SELECT report FROM runs WHERE run_id = %s", (run_id,)
+        ).fetchone()
+        if not row:
+            raise StorageError("No stored run found for that ID")
+        return RunReport.model_validate(row["report"])
+
+    def latest_report(self) -> RunReport | None:
+        row = self.connection.execute("""SELECT r.report FROM runs r
+            WHERE r.status IN ('complete', 'partial') AND NOT r.discovery_only
+            AND EXISTS (SELECT 1 FROM recommendations c WHERE c.run_id = r.run_id)
+            ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1""").fetchone()
+        return RunReport.model_validate(row["report"]) if row else None

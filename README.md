@@ -4,7 +4,8 @@ Known source limitations and follow-up work are tracked in [ISSUES.md](ISSUES.md
 
 A personal technical-reading companion. The application runs in the terminal:
 discover articles → retrieve and validate full text → rank for your profile → summarize →
-save a brief and an inspectable run report.
+save a brief and an inspectable run report. Saved briefs can be delivered to your private
+Telegram chat, with a local listener for basic commands.
 
 The initial profile prioritizes **AI agent harness creation, practical agent use, and agent
 development at novice level**. Harness creation means the tools, state, execution loop,
@@ -146,6 +147,73 @@ simultaneously. No transaction is held open during research or model calls. Unex
 failures/interruption mark a registered run failed; a hard process kill can leave its status
 `running` for later operational reconciliation. Completed run snapshots are immutable.
 
+## Telegram delivery and local commands
+
+Set these values locally in your ignored `.env`:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=YOUR_BOTFATHER_TOKEN
+TELEGRAM_CHAT_ID=YOUR_VERIFIED_PRIVATE_CHAT_ID
+```
+
+Use the private chat ID verified from your own `/start` message. The listener only responds
+when both the private chat and sender match that ID; groups, other users, and unsupported
+update types are ignored. Tokens and chat IDs are not included in `.env.example` values.
+
+Apply the delivery migration, check the bot identity, and send your latest saved brief:
+
+```sh
+.venv/bin/daily-tech --db-migrate
+.venv/bin/daily-tech --telegram-check
+.venv/bin/daily-tech --send-brief
+```
+
+`--telegram-check` is read-only and needs only the token. Sending and listening require
+PostgreSQL, the token, and the verified chat ID. These commands do not call OpenAI.
+`--send-brief RUN_UUID` selects a particular saved brief. By default, delivery selects the
+newest complete or partial run with recommendations, ordered by its original start time.
+It sends an overview followed by each article's title, date, publisher, link, summary,
+technical insights, and relevance explanation. Long text is split below Telegram's message
+limit; plain text avoids markup parsing errors and link previews are disabled.
+
+Start the local listener in a terminal and leave that terminal and Docker running:
+
+```sh
+.venv/bin/daily-tech --telegram-listen
+```
+
+Then try these commands in your Telegram chat:
+
+- `/start`: welcome and available commands.
+- `/brief`: deliver the latest saved brief, or report that it is already in the chat.
+- `/profile`: display the stored reading profile.
+
+Stop the listener with Ctrl+C. `--telegram-poll-once` processes one pending batch and exits,
+which is useful for a smoke test. Polling cursors and command-response plans survive restart.
+Only one listener can own the cursor at a time. An existing webhook stops polling with a
+clear error; the application does not delete the webhook or drop pending updates.
+
+`/brief` reads existing recommendations and does not generate new ones. To produce a fresh
+selection, run `.venv/bin/daily-tech` separately, then use `/brief` or `--send-brief` to deliver
+it. Research therefore stays outside the command handler. Automatic scheduling and profile
+editing through conversation are not implemented in this increment.
+
+Delivery is recorded per bot, private chat, brief, and message part. Repeating `--send-brief`
+or `/brief` does not resend a confirmed brief. After an explicit Telegram rejection, a later
+request can retry the unsent part while skipping confirmed parts. Inspect the latest records:
+
+```sh
+.venv/bin/daily-tech --telegram-deliveries
+```
+
+Telegram has no application-supplied idempotency key for `sendMessage`. A timeout, malformed
+confirmation, or crash between sending and saving the receipt can leave delivery uncertain.
+The app records that state and holds the affected delivery without automatic resend. Check
+the private chat and delivery records before resolving it; there is no force-resend command.
+This conservative handling prevents automatic duplicates but does not guarantee exactly-once
+delivery or automatic completion after an uncertain result. HTTP request URLs containing bot
+tokens are kept out of the app's logs and error messages.
+
 ## Sources and editorial behavior
 
 `config/sources.json` includes OpenAI, Anthropic, Microsoft, Google Research/DeepMind,
@@ -229,7 +297,9 @@ running, this command reads the connection URL from your ignored `.env` without 
 
 These tests create and clean up their own randomly named schemas, leaving application tables
 untouched. They verify migrations, restart persistence, profile corrections, recommendation
-history, concurrency protection, idempotent saves, and failure records. The database role must
+history, concurrency protection, idempotent saves, and failure records. Telegram tests mock all
+API calls while testing the real database outbox, command cursor, authorization checks,
+partial retries, and uncertain/crashed-send behavior. The database role must
 be allowed to create schemas.
 
 ## Boundaries of this increment
@@ -238,8 +308,11 @@ be allowed to create schemas.
 and summarization; `llm.py` exposes a provider-neutral interface with an OpenAI adapter;
 `pipeline.py` connects them through LangGraph; `cli.py` handles configuration and execution.
 `storage.py` owns PostgreSQL access and migrations; `history.py` defines article identities
-for repeat filtering. Profile revision history records explicit JSON imports. Conversational
-memory extraction, feedback learning, Telegram integration, scheduling, and web search are
-still future increments. Database run snapshots are separate from any future LangGraph checkpoints.
+for repeat filtering. `telegram.py` owns transport/rendering; `telegram_service.py` handles
+delivery and command dispatch; `telegram_storage.py` owns the outbox and polling state.
+Profile revision history records explicit JSON imports. Conversational memory extraction,
+feedback learning, deployed webhooks, scheduling, and web search are still future increments.
+Database run snapshots are separate from any future LangGraph checkpoints.
 
-Next increment: Telegram delivery, then explicit feedback and conversational preference updates.
+Next increment: explicit feedback and conversational preference updates, then hosted webhooks
+and scheduled daily delivery.
