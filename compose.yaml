@@ -1,0 +1,23 @@
+name: daily-tech-upgrade
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: daily_tech
+      POSTGRES_USER: daily_tech
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your local .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18 uses a version-specific data directory beneath this path.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daily_tech -d daily_tech"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres_data:

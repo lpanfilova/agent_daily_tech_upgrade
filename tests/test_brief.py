@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 from daily_tech.config import Limits
 from daily_tech.editorial import rank, summarize, validate_evidence
+from daily_tech.history import RecommendationHistory
 from daily_tech.llm import ModelError, OpenAIModel
 from daily_tech.models import (
     Article,
@@ -427,6 +429,37 @@ def test_actual_html_extraction_for_listing_article():
     assert articles[0].published_at.date().isoformat() == "2026-10-30"
     assert articles[0].title == "A beginner guide to agent harnesses"
     assert "State stores" in articles[0].text
+
+
+def test_history_rejects_same_body_under_new_url_and_replenishes_slots(monkeypatch):
+    old_hash = hashlib.sha256(" ".join(TEXT.split()).encode()).hexdigest()
+    history = RecommendationHistory(hashes={old_hash})
+    monkeypatch.setattr(
+        "daily_tech.retrieval.trafilatura.bare_extraction",
+        lambda html, **kwargs: SimpleNamespace(
+            text=TEXT if kwargs["url"].endswith("/a") else TEXT + " Additional material.",
+            title=None,
+        ),
+    )
+
+    async def run():
+        transport = httpx.MockTransport(
+            lambda r: httpx.Response(200, text="<html><body>Article</body></html>")
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            events = []
+            articles = await verify(
+                [candidate("a"), candidate("b")],
+                [source()],
+                Fetcher(client, Limits(max_articles=1)),
+                NOW,
+                events,
+                history,
+            )
+            assert "Previously recommended" in events[0]["reason"]
+            return articles
+
+    assert [a.id for a in asyncio.run(run())] == ["b"]
 
 
 def test_openai_error_does_not_expose_key():

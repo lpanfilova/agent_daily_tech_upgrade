@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Literal
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -75,6 +76,9 @@ class Recommendation(StrictModel):
 
 
 class RunReport(StrictModel):
+    run_id: UUID = Field(default_factory=uuid4)
+    completed_at: datetime | None = None
+    allow_repeats: bool = False
     started_at: datetime
     status: Literal["discovery_only", "complete", "partial", "failed"]
     profile: Profile

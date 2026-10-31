@@ -7,13 +7,15 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import Limits
 from .editorial import choose_group, rank, summarize, topic_key
+from .history import RecommendationHistory
 from .llm import ModelError, StructuredModel
 from .models import Rating, Recommendation, RunReport, Source
-from .retrieval import Fetcher, discover, event, verify
+from .retrieval import Fetcher, canonical_url, discover, event, verify
 
 
 class State(TypedDict, total=False):
     ratings: list[Rating]
+    candidates_to_verify: list
 
 
 async def run_pipeline(
@@ -22,14 +24,34 @@ async def run_pipeline(
     fetcher: Fetcher,
     model: StructuredModel | None,
     limits: Limits,
+    history: RecommendationHistory | None = None,
 ) -> RunReport:
     async def discovery(state: State) -> dict:
         report.candidates = await discover(sources, fetcher, report.started_at, report.events)
+        if history:
+            remaining = []
+            for candidate in report.candidates:
+                if history.contains(canonical_url(candidate.url), candidate.title):
+                    event(
+                        report.events,
+                        "history_excluded",
+                        candidate.url,
+                        "Previously recommended URL or title",
+                    )
+                else:
+                    remaining.append(candidate)
+            # Keep all discovered candidates in the report for inspection.
+            return {"candidates_to_verify": remaining}
         return {}
 
     async def verification(state: State) -> dict:
         report.articles = await verify(
-            report.candidates, sources, fetcher, report.started_at, report.events
+            state.get("candidates_to_verify", report.candidates),
+            sources,
+            fetcher,
+            report.started_at,
+            report.events,
+            history,
         )
         return {}
 
@@ -102,6 +124,7 @@ async def run_pipeline(
         event(report.events, "run_error", "pipeline", str(exc) or "Runtime budget exhausted")
     finally:
         report.model_usage = model.usage if model else []
+        report.completed_at = datetime.now(UTC)
     return report
 
 

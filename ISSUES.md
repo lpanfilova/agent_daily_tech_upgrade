@@ -65,3 +65,19 @@ by the application. This resolves the first live run's omitted/incorrect-ID reje
 Summary schemas now constrain evidence to short excerpts constructed from source text,
 resolving failures caused by model-generated excerpts outside the word-count limit.
 Regression tests cover both constraints; semantic support remains the open work above.
+
+## MODEL-001: Investigate article-specific summary HTTP 400
+
+- **Status:** Open
+- **Recorded:** 2026-10-31
+- **Evidence:** Database-backed run `6c618bac-15e1-4c9d-9a43-37b73cccb67b`,
+  local report `output/20261031T215052019611Z/run.json`.
+
+The summary request for the Hugging Face article `https://huggingface.co/blog/mistral-large4`
+returned HTTP 400. Other requests succeeded with the same model and credentials. The run
+recorded the rejection and completed with three alternative recommendations.
+
+Follow up by recording sanitized provider error codes/parameters and checking the generated
+article-specific response schema. The current generic error does not establish the cause.
+Do not log API keys or authorization headers. Close after a regression check and a successful
+request for the affected article or a documented, actionable exclusion reason.

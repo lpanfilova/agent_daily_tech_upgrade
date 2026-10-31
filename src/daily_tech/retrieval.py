@@ -16,6 +16,7 @@ from lxml import etree
 from lxml import html as lxml_html
 
 from .config import Limits
+from .history import RecommendationHistory
 from .models import Article, Candidate, Source
 
 
@@ -260,6 +261,7 @@ async def verify(
     fetcher: Fetcher,
     now: datetime,
     events: list[dict],
+    history: RecommendationHistory | None = None,
 ) -> list[Article]:
     by_source = {source.name: source for source in sources}
     result: list[Article] = []
@@ -309,6 +311,8 @@ async def verify(
             )
             title_key = re.sub(r"\W+", "", title.casefold())
             digest = hashlib.sha256(" ".join(text.split()).encode()).hexdigest()
+            if history and history.contains(url, title, digest):
+                raise ValueError("Previously recommended article (URL, title, or content match)")
             if url in seen_urls or title_key in seen_titles or digest in seen_hashes:
                 raise ValueError("Duplicate URL, title, or article body")
             seen_urls.add(url)

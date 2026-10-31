@@ -14,6 +14,7 @@ dependencies = [
   "pydantic>=2.10,<3",
   "python-dotenv>=1.0,<2",
   "langgraph>=1.0,<2",
+  "psycopg[binary]>=3.3,<4",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,9 @@ daily-tech = "daily_tech.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+daily_tech = ["migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
