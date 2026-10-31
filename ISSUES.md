@@ -32,3 +32,36 @@ credentials or a subscription would resolve access.
 
 Either ACM supplies discoverable articles with readable content and valid metadata through
 a supported access method, or the source is explicitly disabled with its limitation documented.
+
+## EDITORIAL-001: Improve novice relevance and claim-to-evidence support
+
+- **Status:** Open
+- **Recorded:** 2026-10-31
+- **Priority:** Address before treating brief quality as accepted.
+- **Evidence:** First completed live brief at `output/20261031T210244836674Z/brief.md`
+  and its accompanying `run.json` (local, excluded from Git).
+
+### Observed behavior
+
+The generated brief selected a continual-learning research article for a novice interested
+in agent harnesses and practical agent development. Its relevance explanation overstates
+how directly a beginner can apply the research. Some insight evidence excerpts contain
+titles, author information, or other text that does not directly substantiate the claim.
+Exact excerpt presence alone does not establish factual support.
+
+### Follow-up and completion criteria
+
+- Distinguish approachable, actionable agent tutorials from adjacent model-training research
+  in ranking. Explain prerequisites and label stretch reading explicitly if included.
+- Improve evidence selection and check that the associated claim follows from its evidence
+  and surrounding source context. Avoid title/byline snippets as technical evidence.
+- Review the three summaries against their full source text, including numerical claims and
+  relevance explanations, and obtain user feedback on usefulness and difficulty.
+
+### Live-run fixes
+
+Ranking now uses a required assessment field for each candidate, with original IDs attached
+by the application. This resolves the first live run's omitted/incorrect-ID rejection.
+Summary schemas now constrain evidence to short excerpts constructed from source text,
+resolving failures caused by model-generated excerpts outside the word-count limit.
+Regression tests cover both constraints; semantic support remains the open work above.

@@ -88,7 +88,10 @@ never used to make an old article fresh. Paywalls marked in structured metadata,
 previews, inaccessible content, and articles exceeding the full-text input limit are skipped.
 
 Each generated insight must include a short excerpt that actually occurs in the retrieved
-text. Excerpts are retained for review in `run.json`. This checks evidence presence;
+text. Code constructs allowed excerpts and the response schema constrains the model to
+choose from them. Ranking likewise requires one assessment per supplied candidate, with
+the application attaching the original article IDs. Excerpts are retained for review in
+`run.json`. This checks evidence presence;
 it does **not** establish that every summary claim follows from that evidence. Human review
 of the first generated brief is still part of acceptance. Credible publishers can also
 publish marketing, sponsored material, or advanced content; ranking filters these by prompt

@@ -5,17 +5,16 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from daily_tech.config import Limits
-from daily_tech.editorial import rank, validate_evidence
+from daily_tech.editorial import rank, summarize, validate_evidence
 from daily_tech.llm import ModelError, OpenAIModel
 from daily_tech.models import (
     Article,
     Candidate,
     Insight,
     Profile,
-    Rating,
-    Ratings,
     RunReport,
     Source,
     Summary,
@@ -87,25 +86,23 @@ def summary(evidence="An agent harness manages tools and tracks execution state.
 
 
 class FakeModel:
-    def __init__(self, ratings=None, bad_summary=False):
+    def __init__(self, bad_summary=False):
         self.usage = []
-        self.ratings = ratings
         self.bad_summary = bad_summary
 
     async def generate(self, instructions, data, schema):
         self.usage.append({"test_call": schema.__name__})
-        if schema is Ratings:
-            return self.ratings or Ratings(
-                ratings=[
-                    Rating(
-                        article_id=a["article_id"],
-                        relevance=5,
-                        quality=4,
-                        topic=a["article_id"],
-                        reason="Practical tutorial",
-                    )
+        if "articles" in data:
+            return schema.model_validate(
+                {
+                    a["response_key"]: {
+                        "relevance": 5,
+                        "quality": 4,
+                        "topic": a["response_key"],
+                        "reason": "Practical tutorial",
+                    }
                     for a in data["articles"]
-                ]
+                }
             )
         return (
             summary("These words are fabricated and absent from the source.")
@@ -225,16 +222,40 @@ def test_evidence_must_exist_in_article():
         )
 
 
-def test_rank_rejects_invented_ids():
-    model = FakeModel(
-        Ratings(
-            ratings=[
-                Rating(article_id="unknown", relevance=5, quality=5, topic="agents", reason="test")
-            ]
-        )
-    )
-    with pytest.raises(ModelError, match="article IDs"):
-        asyncio.run(rank([article()], PROFILE, model))
+def test_summary_schema_only_allows_short_source_excerpts():
+    class InspectingModel(FakeModel):
+        async def generate(self, instructions, data, schema):
+            options = schema.model_json_schema()["$defs"]["GroundedInsight"]["properties"][
+                "evidence"
+            ]["enum"]
+            assert all(6 <= len(option.split()) <= 12 for option in options)
+            assert all(option in " ".join(TEXT.split()) for option in options)
+            payload = summary().model_dump()
+            with pytest.raises(ValidationError):
+                schema.model_validate(payload)
+            for insight in payload["insights"]:
+                insight["evidence"] = options[0]
+            return schema.model_validate(payload)
+
+    result = asyncio.run(summarize(article(), PROFILE, InspectingModel()))
+    validate_evidence(result, article())
+
+
+def test_rank_schema_requires_every_candidate_and_forbids_invented_keys():
+    class InspectingModel(FakeModel):
+        async def generate(self, instructions, data, schema):
+            assessment = {"relevance": 5, "quality": 4, "topic": "agents", "reason": "tutorial"}
+            assert schema.model_json_schema()["required"] == ["article_0", "article_1"]
+            with pytest.raises(ValidationError):
+                schema.model_validate({"article_0": assessment})
+            with pytest.raises(ValidationError):
+                schema.model_validate(
+                    {"article_0": assessment, "article_1": assessment, "invented": assessment}
+                )
+            return await super().generate(instructions, data, schema)
+
+    ratings = asyncio.run(rank([article("real-a"), article("real-b")], PROFILE, InspectingModel()))
+    assert {r.article_id for r in ratings} == {"real-a", "real-b"}
 
 
 def prepare_pipeline(monkeypatch, articles):

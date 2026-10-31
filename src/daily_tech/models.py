@@ -46,16 +46,15 @@ class Article(Candidate):
     retrieved_at: datetime
 
 
-class Rating(StrictModel):
-    article_id: str
+class RatingAssessment(StrictModel):
     relevance: int = Field(ge=0, le=5)
     quality: int = Field(ge=0, le=5)
     topic: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=500)
 
 
-class Ratings(StrictModel):
-    ratings: list[Rating]
+class Rating(RatingAssessment):
+    article_id: str
 
 
 class Insight(StrictModel):
