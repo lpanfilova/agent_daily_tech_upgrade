@@ -1,0 +1,13 @@
+[
+  {"name":"OpenAI News","publisher":"OpenAI","homepage":"https://openai.com/news/","domains":["openai.com"],"feed_url":"https://openai.com/news/rss.xml"},
+  {"name":"Anthropic Engineering","publisher":"Anthropic","homepage":"https://www.anthropic.com/engineering","domains":["anthropic.com"],"article_path_prefixes":["/engineering/","/research/"],"note":"Official listing discovery; no official RSS feed configured."},
+  {"name":"Microsoft Research","publisher":"Microsoft","homepage":"https://www.microsoft.com/en-us/research/blog/","domains":["microsoft.com"],"feed_url":"https://www.microsoft.com/en-us/research/feed/"},
+  {"name":"Google Research","publisher":"Google","homepage":"https://research.google/blog/","domains":["research.google","research.googleblog.com","blog.research.google"],"feed_url":"https://research.google/blog/rss/"},
+  {"name":"Google DeepMind","publisher":"Google","homepage":"https://deepmind.google/blog/","domains":["deepmind.google"],"feed_url":"https://deepmind.google/blog/rss.xml"},
+  {"name":"AWS Machine Learning","publisher":"AWS","homepage":"https://aws.amazon.com/blogs/machine-learning/","domains":["aws.amazon.com"],"feed_url":"https://aws.amazon.com/blogs/machine-learning/feed/"},
+  {"name":"IBM Think","publisher":"IBM","homepage":"https://www.ibm.com/think","domains":["ibm.com"],"article_path_prefixes":["/think/news/","/think/tutorials/","/think/insights/"],"note":"Official listing discovery."},
+  {"name":"LangChain / LangGraph","publisher":"LangChain","homepage":"https://www.langchain.com/blog","domains":["blog.langchain.com","langchain.com"],"article_path_prefixes":["/blog/"],"note":"Official listing discovery; previous Ghost RSS feed retired."},
+  {"name":"IEEE Spectrum","publisher":"IEEE","homepage":"https://spectrum.ieee.org/","domains":["spectrum.ieee.org"],"feed_url":"https://spectrum.ieee.org/feeds/feed.rss"},
+  {"name":"ACM Queue","publisher":"ACM","homepage":"https://queue.acm.org/","domains":["queue.acm.org","dl.acm.org"],"article_path_prefixes":["/detail.cfm","/doi/"],"note":"Official listing discovery; feed URLs returned 410/404 during validation."},
+  {"name":"Hugging Face","publisher":"Hugging Face","homepage":"https://huggingface.co/blog","domains":["huggingface.co"],"feed_url":"https://huggingface.co/blog/feed.xml","note":"Additional primary technical source."}
+]

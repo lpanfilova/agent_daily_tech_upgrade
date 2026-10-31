@@ -205,6 +205,12 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Generated briefs and personal configuration
+output/
+config/profile.json
+.env.*
+!.env.example
+
 # Ruff stuff:
 .ruff_cache/
 
