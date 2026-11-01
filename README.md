@@ -214,6 +214,101 @@ This conservative handling prevents automatic duplicates but does not guarantee 
 delivery or automatic completion after an uncertain result. HTTP request URLs containing bot
 tokens are kept out of the app's logs and error messages.
 
+## Demo evaluation: frozen inputs and human review
+
+Create an evaluation snapshot before changing preference behavior:
+
+```sh
+.venv/bin/daily-tech --eval-freeze
+```
+
+This reads the latest stored brief's full retrieved article pool and the current stored
+profile. It writes a versioned `snapshot.json` below the ignored `output/evaluations/`
+directory. It does not generate content, send Telegram messages, or change the database.
+To freeze a particular run, pass its UUID; to work without PostgreSQL, pass a saved `run.json`
+file instead. File-based export uses that report's profile. An explicit `--profile FILE`
+overrides the evaluation snapshot only, without updating the production profile.
+
+The snapshot records article bodies/hashes and metadata, an eligibility reference time,
+profile, replay model, replay limits, and an editorial-code fingerprint. It includes every
+accepted retrieved article in the source run, not only the selected three. Inaccessible or
+rejected discovery candidates are not part of this corpus. Historical runs did not capture
+every generation setting; replay settings are captured at export, not reconstructed as
+verified historical settings.
+
+Use the printed snapshot path to run a controlled comparison:
+
+```sh
+.venv/bin/daily-tech --eval-replay PATH_TO_SNAPSHOT_JSON
+```
+
+This calls OpenAI for generic and current-profile ranking using the same frozen article
+pool. It shares production selection/summarization code and keeps quality floors, diversity,
+reading budget, model, and summary audience/style fixed. The generic condition ranks for
+broad practical technical usefulness without a personal profile. Only ranking preferences
+vary; summaries remain adapted to the frozen profile so selection can be compared fairly.
+No articles are rediscovered or re-filtered against today's date.
+
+Each condition has its own bounded model-call/runtime budget from the snapshot. With default
+limits, two conditions permit at most 14 model calls total, or 21 for three conditions.
+Successful three-article briefs normally use four calls per condition. Each replay gets a new
+attempt directory and preserves failures and partial results. A changed editorial-code
+fingerprint requires a new snapshot; compare conditions generated with the same revision.
+
+The attempt directory contains:
+
+- `snapshot.json`, `result.json`: the inputs, profiles, outputs, events, durations, and returned
+  usage. Hash checks detect accidental edits to frozen inputs and generated results.
+- `generic_brief.md`, `current_brief.md`: evaluation-only briefs; neither is sent or recorded
+  as a production recommendation.
+- `review_guide.md`, `review.json`: a condition-label-free article worksheet and editable human
+  ratings, metadata checks, and draft claim inventory. Raw results/claim labels expose the
+  conditions, so this is not a double-blind study.
+- `metrics.json`, `report.md`: calculated measures and a demo-ready explanation, initially
+  showing **Not measured** wherever human review is missing.
+
+Edit only `review.json` for review. Rate each unique selected article once from 1–5 on relevance,
+difficulty fit, and practical value (1 poor, 3 mixed, 5 excellent). Shared articles reuse their
+ratings across conditions. Null means unrated, not zero. The report shows each condition's
+selected slots out of three and available rating counts; partial averages are explicitly
+labelled. Rating deltas are withheld until both conditions have complete ratings for that
+dimension. A descriptive difference is not proof of causal improvement.
+
+For accuracy review, check the full saved source text, metadata, summaries, technical insights,
+and relevance explanations. Draft claim rows use sentence splitting and may need to be split,
+added, or marked non-factual. Supported claims require a matching saved-source passage; that
+mechanical check alone does not establish semantic support. Contradicted/unverifiable/non-factual
+labels require review notes. Set `claim_inventory_checked` only after reviewing the complete
+condition. The support rate is supported divided by all reviewed factual claims, including
+contradicted and unverifiable claims in the denominator. It remains unmeasured while the inventory
+is unchecked or any claim remains pending. Metadata verification is verified divided by all
+field checks, with incorrect and unverified fields reported separately; the rate is withheld
+until those checks are reviewed.
+
+Recalculate after reviewing, using the attempt directory printed by the replay command:
+
+```sh
+.venv/bin/daily-tech --eval-report PATH_TO_EVALUATION_ATTEMPT_DIRECTORY
+```
+
+Report calculation is local and requires neither a model key nor PostgreSQL. It never rewrites
+model outputs or fills human labels automatically. Latency measures editorial replay only,
+excluding discovery and delivery. Reported tokens are those returned by the provider; missing
+usage is flagged and no monetary estimate is invented. Regression-test results and production
+delivery reliability remain separate evidence.
+
+A future corrected-profile comparison can be replayed with an explicit JSON profile:
+
+```sh
+.venv/bin/daily-tech --eval-replay PATH_TO_SNAPSHOT_JSON --eval-corrected-profile config/profile.json
+```
+
+This adds a third condition in a new attempt and does not update the real profile. It does not
+prove conversational extraction or restart persistence; those checks will accompany the feedback
+increment. Until measured, the report labels the correction effect as unmeasured. One user and
+one corpus provide initial descriptive evidence, not a general benchmark or statistical claim.
+The current stage captures the baseline before adding Telegram feedback and preference updates.
+
 ## Sources and editorial behavior
 
 `config/sources.json` includes OpenAI, Anthropic, Microsoft, Google Research/DeepMind,
@@ -314,5 +409,8 @@ Profile revision history records explicit JSON imports. Conversational memory ex
 feedback learning, deployed webhooks, scheduling, and web search are still future increments.
 Database run snapshots are separate from any future LangGraph checkpoints.
 
-Next increment: explicit feedback and conversational preference updates, then hosted webhooks
-and scheduled daily delivery.
+`evaluation*.py` provides isolated corpus export, editorial replay, and human-review metrics;
+these artifacts never enter production recommendation history or delivery.
+
+Next increment: explicit feedback and conversational preference updates, evaluated against the
+frozen baseline, then hosted webhooks and scheduled daily delivery.

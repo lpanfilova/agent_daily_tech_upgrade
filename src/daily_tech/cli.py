@@ -13,6 +13,7 @@ import psycopg
 from dotenv import load_dotenv
 
 from .config import Limits, load_profile, load_sources
+from .evaluation_cli import execute_evaluation
 from .llm import OpenAIModel
 from .models import RunReport
 from .pipeline import run_pipeline, save_report
@@ -36,6 +37,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--days", type=int, default=7, help="Publication lookback; default: 7 days")
     result.add_argument("--runtime-seconds", type=int, default=300)
     result.add_argument("--model", help="Overrides OPENAI_MODEL")
+    result.add_argument(
+        "--eval-corrected-profile",
+        type=Path,
+        help="Evaluation-only corrected JSON profile; never updates the real profile",
+    )
     result.add_argument("--no-db", action="store_true", help="Run in file-only mode")
     result.add_argument(
         "--allow-repeats",
@@ -74,10 +80,33 @@ def parser() -> argparse.ArgumentParser:
     actions.add_argument(
         "--telegram-deliveries", action="store_true", help="Show recent Telegram delivery statuses"
     )
+    actions.add_argument(
+        "--eval-freeze",
+        nargs="?",
+        const="latest",
+        metavar="RUN_JSON_OR_UUID",
+        help="Freeze retrieved articles/profile; defaults to latest saved brief",
+    )
+    actions.add_argument(
+        "--eval-replay",
+        type=Path,
+        metavar="SNAPSHOT_JSON",
+        help="Compare generic/current ranking on frozen inputs using OpenAI",
+    )
+    actions.add_argument(
+        "--eval-report",
+        type=Path,
+        metavar="EVALUATION_DIR",
+        help="Recalculate evaluation report from saved human reviews",
+    )
     return result
 
 
 async def execute(args: argparse.Namespace) -> int:
+    if args.eval_corrected_profile and not args.eval_replay:
+        raise ValueError("--eval-corrected-profile requires --eval-replay")
+    if args.eval_freeze or args.eval_replay or args.eval_report:
+        return await execute_evaluation(args)
     if args.telegram_check:
         settings = TelegramSettings.from_env(require_chat=False)
         async with httpx.AsyncClient() as http:

@@ -77,6 +77,11 @@ The summary request for the Hugging Face article `https://huggingface.co/blog/mi
 returned HTTP 400. Other requests succeeded with the same model and credentials. The run
 recorded the rejection and completed with three alternative recommendations.
 
+The same article-specific rejection recurred in the `current` condition of evaluation
+`64c76ea0-8b1d-4b14-8d61-4c90885f29a1` (frozen snapshot `9e531cb387895c62`).
+The condition still produced three articles. Its report flags token usage as incomplete
+because the rejected call did not return usage; the failed attempt remains in `result.json`.
+
 Follow up by recording sanitized provider error codes/parameters and checking the generated
 article-specific response schema. The current generic error does not establish the cause.
 Do not log API keys or authorization headers. Close after a regression check and a successful

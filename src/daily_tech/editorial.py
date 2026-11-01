@@ -15,7 +15,9 @@ technical value over announcements, marketing, company news, events, and sponsor
 """
 
 
-async def rank(articles: list[Article], profile: Profile, model: StructuredModel) -> list[Rating]:
+async def rank(
+    articles: list[Article], profile: Profile | None, model: StructuredModel
+) -> list[Rating]:
     if not articles:
         return []
     # Require one named assessment per candidate in the response schema. The application
@@ -26,8 +28,15 @@ async def rank(articles: list[Article], profile: Profile, model: StructuredModel
         __base__=StrictModel,
         **{label: (RatingAssessment, ...) for label in labels},
     )
+    audience_policy = (
+        "Use the supplied profile for relevance and difficulty fit."
+        if profile
+        else "This is the non-personalized baseline: assess relevance as broad practical "
+        "technical usefulness. Do not infer personal interests or proficiency."
+    )
     response = await model.generate(
         POLICY
+        + audience_policy
         + """Rate EVERY candidate once using its response_key as the output field name.
 Relevance is 0–5 for this user's interests and level;
 quality is 0–5 for substantive technical explanation, practical value, and originality. A novice
@@ -35,7 +44,7 @@ needs definitions and approachable examples. Give pure promotions, events, and s
 quality below 3. Topic should identify the central subject so duplicate stories share a label.
 Reasons must refer to the supplied content. A trusted publisher alone does not ensure quality.""",
         {
-            "profile": profile.model_dump(),
+            "profile": profile.model_dump() if profile else None,
             "articles": [
                 {
                     "response_key": label,

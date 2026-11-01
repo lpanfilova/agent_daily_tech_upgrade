@@ -9,7 +9,7 @@ from .config import Limits
 from .editorial import choose_group, rank, summarize, topic_key
 from .history import RecommendationHistory
 from .llm import ModelError, StructuredModel
-from .models import Rating, Recommendation, RunReport, Source
+from .models import Profile, Rating, Recommendation, RunReport, Source
 from .retrieval import Fetcher, canonical_url, discover, event, verify
 
 
@@ -60,47 +60,7 @@ async def run_pipeline(
         return {"ratings": report.ratings}
 
     async def summarization(state: State) -> dict:
-        articles = {a.id: a for a in report.articles}
-        publishers: set[str] = set()
-        topics: set[str] = set()
-        minutes = 0
-        remaining = list(state["ratings"])
-        attempts = 0
-        while remaining and len(report.recommendations) < 3:
-            group = choose_group(
-                remaining,
-                articles,
-                3 - len(report.recommendations),
-                limits.max_reading_minutes - minutes,
-                publishers,
-                topics,
-            )
-            if not group or attempts >= limits.max_model_calls - 1:
-                break
-            rating = group[0]
-            remaining.remove(rating)
-            article = articles[rating.article_id]
-            topic = topic_key(rating.topic)
-            attempts += 1
-            try:
-                summary = await summarize(article, report.profile, model)
-            except (ModelError, ValueError) as exc:
-                event(report.events, "summary_rejected", article.url, str(exc))
-                continue
-            report.recommendations.append(
-                Recommendation(article=article, rating=rating, summary=summary)
-            )
-            publishers.add(article.publisher)
-            topics.add(topic)
-            minutes += article.reading_minutes
-        for rating in remaining:
-            reason = (
-                rating.reason
-                if rating.quality < 3 or rating.relevance < 3
-                else "Not selected within diversity, reading-time, or model-call limits"
-            )
-            event(report.events, "editorial_rejected", articles[rating.article_id].url, reason)
-        report.status = "complete" if len(report.recommendations) == 3 else "partial"
+        await summarize_ranked(report, model, limits, report.profile)
         return {}
 
     builder = StateGraph(State)
@@ -126,6 +86,53 @@ async def run_pipeline(
         report.model_usage = model.usage if model else []
         report.completed_at = datetime.now(UTC)
     return report
+
+
+async def summarize_ranked(
+    report: RunReport, model: StructuredModel, limits: Limits, summary_profile: Profile
+) -> None:
+    """Shared selection/summarization for production and controlled offline replays."""
+    articles = {a.id: a for a in report.articles}
+    publishers: set[str] = set()
+    topics: set[str] = set()
+    minutes = 0
+    remaining = list(report.ratings)
+    attempts = 0
+    while remaining and len(report.recommendations) < 3:
+        group = choose_group(
+            remaining,
+            articles,
+            3 - len(report.recommendations),
+            limits.max_reading_minutes - minutes,
+            publishers,
+            topics,
+        )
+        if not group or attempts >= limits.max_model_calls - 1:
+            break
+        rating = group[0]
+        remaining.remove(rating)
+        article = articles[rating.article_id]
+        topic = topic_key(rating.topic)
+        attempts += 1
+        try:
+            summary = await summarize(article, summary_profile, model)
+        except (ModelError, ValueError) as exc:
+            event(report.events, "summary_rejected", article.url, str(exc))
+            continue
+        report.recommendations.append(
+            Recommendation(article=article, rating=rating, summary=summary)
+        )
+        publishers.add(article.publisher)
+        topics.add(topic)
+        minutes += article.reading_minutes
+    for rating in remaining:
+        reason = (
+            rating.reason
+            if rating.quality < 3 or rating.relevance < 3
+            else "Not selected within diversity, reading-time, or model-call limits"
+        )
+        event(report.events, "editorial_rejected", articles[rating.article_id].url, reason)
+    report.status = "complete" if len(report.recommendations) == 3 else "partial"
 
 
 def render_brief(report: RunReport) -> str:
