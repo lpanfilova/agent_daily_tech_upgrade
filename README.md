@@ -162,24 +162,40 @@ previous results.
 
 ## Architecture
 
+**Brief generation and delivery.** Run `daily-tech` to generate; use `--send-brief` or
+Telegram `/brief` to deliver the saved result. Solid arrows show steps; dashed arrows supply data.
+
 ```mermaid
-flowchart LR
-    CLI[Python CLI] --> Research[LangGraph research pipeline]
-    Sources[Trusted feeds and official listings] --> Research
-    Research <--> Model[OpenAI adapter]
-    Research <--> DB[(PostgreSQL)]
-    Research --> Files[Briefs and run artifacts]
-    CLI --> Bot[Telegram service and local polling]
-    Bot <--> DB
-    Bot <--> Chat[Private Telegram chat]
-    Eval[Frozen-input evaluation and source-support judge] --> Files
-    Eval <--> Model
+flowchart TD
+    Sources[Trusted feeds and official listings] -. article links .-> Discover
+    subgraph Research[LangGraph research pipeline]
+        Discover[Discover candidates] --> Verify[Retrieve and verify full text]
+        Verify --> Rank[Rank and select articles with OpenAI]
+        Rank --> Summarize[Summarize with OpenAI]
+    end
+    Profile[(Stored profile, preferences and history)] -. personalization and repeat filtering .-> Research
+    Summarize --> Save[Save brief to PostgreSQL and output files]
+    Save -->|Separate delivery command| Deliver[Send saved brief and record delivery status]
+    Deliver --> Chat[Private Telegram chat]
 ```
 
-`retrieval.py` handles discovery/verification; `editorial.py` handles ranking/summaries;
-`preferences.py` handles memory/feedback; `telegram_*.py` handles interaction/delivery;
-`evaluation*.py` handles isolated evaluation. PostgreSQL holds profiles, evidence, runs,
-recommendations, and delivery state.
+**Preference updates.** The local listener processes messages. Only confirmed preferences
+become active; `/remember` skips model interpretation and still requires confirmation.
+
+```mermaid
+flowchart TD
+    Message[Reading preference sent in Telegram] --> Interpret[Interpret with OpenAI]
+    Interpret --> Proposal[Show proposed preference and its P number]
+    Proposal --> Confirm[User sends /confirm Pn]
+    Confirm --> Memory[(Activate preference in PostgreSQL with source evidence)]
+    Memory --> Future[Load effective profile on the next generation run]
+    Future --> Personalize[Use in ranking and summarization]
+```
+
+**Evaluation runs separately** on frozen article/profile snapshots. It reuses the editorial
+pipeline, compares selections, and judges source support through additional model calls.
+Reports and judge evidence stay in `output/evaluations/`; production history and Telegram
+delivery are unchanged.
 
 The app may return fewer than three articles when quality, access, diversity, or history
 constraints cannot be met. Uncertain Telegram sends are held for inspection rather than
