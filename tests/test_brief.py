@@ -102,6 +102,8 @@ class FakeModel:
                         "quality": 4,
                         "topic": a["response_key"],
                         "reason": "Practical tutorial",
+                        "violates_explicit_preferences": False,
+                        "constraint_reason": "",
                     }
                     for a in data["articles"]
                 }
@@ -246,7 +248,14 @@ def test_summary_schema_only_allows_short_source_excerpts():
 def test_rank_schema_requires_every_candidate_and_forbids_invented_keys():
     class InspectingModel(FakeModel):
         async def generate(self, instructions, data, schema):
-            assessment = {"relevance": 5, "quality": 4, "topic": "agents", "reason": "tutorial"}
+            assessment = {
+                "relevance": 5,
+                "quality": 4,
+                "topic": "agents",
+                "reason": "tutorial",
+                "violates_explicit_preferences": False,
+                "constraint_reason": "",
+            }
             assert schema.model_json_schema()["required"] == ["article_0", "article_1"]
             with pytest.raises(ValidationError):
                 schema.model_validate({"article_0": assessment})
@@ -258,6 +267,29 @@ def test_rank_schema_requires_every_candidate_and_forbids_invented_keys():
 
     ratings = asyncio.run(rank([article("real-a"), article("real-b")], PROFILE, InspectingModel()))
     assert {r.article_id for r in ratings} == {"real-a", "real-b"}
+
+
+def test_explicit_preference_violation_cannot_pass_relevance_gate():
+    class ConstraintModel(FakeModel):
+        async def generate(self, instructions, data, schema):
+            response = await super().generate(instructions, data, schema)
+            response.article_0.violates_explicit_preferences = True
+            response.article_0.constraint_reason = (
+                "The article studies model-weight training, which the user avoids."
+            )
+            return response
+
+    constrained = PROFILE.model_copy(
+        update={
+            "style": PROFILE.style
+            + "\nSaved explicit reading preferences:\nAvoid model-training research."
+        }
+    )
+    result = asyncio.run(rank([article()], constrained, ConstraintModel()))
+    assert result[0].relevance == 0
+    assert "Excluded by an explicit" in result[0].reason
+    generic = asyncio.run(rank([article()], None, ConstraintModel()))
+    assert generic[0].relevance == 5
 
 
 def prepare_pipeline(monkeypatch, articles):

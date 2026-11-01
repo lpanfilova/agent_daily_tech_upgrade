@@ -58,9 +58,23 @@ class OpenAIModel:
             response.raise_for_status()
             body = response.json()
         except httpx.HTTPStatusError as exc:
-            self.usage.append({"call": self.calls, "status": exc.response.status_code})
+            details = {}
+            try:
+                error = exc.response.json().get("error", {})
+                if isinstance(error, dict):
+                    details = {
+                        k: str(error[k]).replace(self.api_key, "[redacted]")[:400]
+                        for k in ("code", "param", "message")
+                        if error.get(k)
+                    }
+            except (ValueError, AttributeError):
+                pass
+            record = {"call": self.calls, "status": exc.response.status_code}
+            if details:
+                record["error"] = details
+            self.usage.append(record)
             raise ModelError(
-                f"OpenAI HTTP {exc.response.status_code}; check model, key, and quota"
+                f"OpenAI HTTP {exc.response.status_code}: {details.get('message', 'check model, key, and quota')}"
             ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             self.usage.append({"call": self.calls, "status": "request_failed"})

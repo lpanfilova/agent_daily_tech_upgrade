@@ -195,8 +195,8 @@ clear error; the application does not delete the webhook or drop pending updates
 
 `/brief` reads existing recommendations and does not generate new ones. To produce a fresh
 selection, run `.venv/bin/daily-tech` separately, then use `/brief` or `--send-brief` to deliver
-it. Research therefore stays outside the command handler. Automatic scheduling and profile
-editing through conversation are not implemented in this increment.
+it. Research therefore stays outside the command handler. Automatic scheduling is not enabled.
+Reading preferences can be updated through the confirmation workflow below.
 
 Delivery is recorded per bot, private chat, brief, and message part. Repeating `--send-brief`
 or `/brief` does not resend a confirmed brief. After an explicit Telegram rejection, a later
@@ -214,7 +214,78 @@ This conservative handling prevents automatic duplicates but does not guarantee 
 delivery or automatic completion after an uncertain result. HTTP request URLs containing bot
 tokens are kept out of the app's logs and error messages.
 
-## Demo evaluation: frozen inputs and human review
+## Article feedback and conversational preferences
+
+After updating the application, stop any old listener with Ctrl+C and apply migrations:
+
+```sh
+.venv/bin/daily-tech --db-migrate
+.venv/bin/daily-tech --telegram-feedback-buttons
+.venv/bin/daily-tech --telegram-listen
+```
+
+New article deliveries include Like/Dislike buttons on the final message part for each article.
+The button-upgrade command adds them to recent confirmed messages without re-sending the brief;
+it refuses to run while another listener owns the cursor. Callback feedback must match the
+verified private sender/chat and the saved bot message, run, and article position.
+
+A reaction is stored as article-specific feedback, with an F number. To add a free-text reason,
+send `/reason F1 Too advanced for me`, using the actual returned number. Reasons are never
+silently assigned to whichever article was rated most recently. Up to five recent article
+signals, using the latest vote per article/run, are included as weak ranking context; one dislike
+does not create a permanent topic ban or alter evaluation ratings.
+
+Send a natural-language reading preference, such as “Prefer beginner tutorials about agent
+harnesses.” The bot uses one bounded structured model call to propose a memory and preserve the
+original message as evidence. No proposal becomes active until you explicitly confirm it:
+
+```text
+/preferences
+/confirm P2
+/reject P2
+/replace P1 Prefer short practical tutorials about agent tools
+/forget P2
+```
+
+Use the P numbers actually shown by your bot. `/replace` creates a new proposal and displays
+which existing preferences would be superseded. Significant conflicts are proposed for
+confirmation; changed or unknown replacement IDs are rejected. Topic-specific proficiency must
+not overwrite the global reading level. `/preferences` displays scope, status, explicit/tentative
+classification, confidence, and source evidence. `/profile` displays the effective profile.
+
+For a model-free explicit proposal, use `/remember your preference`, then confirm its P number.
+Buttons, reasons, inspection, and confirmation commands do not use OpenAI. Natural-language
+interpretation needs `OPENAI_API_KEY` and `OPENAI_MODEL`; it is limited to one request with
+1,500 output tokens. Ambiguous article reactions ask for association/clarification instead of
+becoming preferences. Failed or interrupted interpretation is not silently recharged on replay;
+restate the request or use `/remember`.
+
+The structured imported profile remains a base. Confirmed memories and their topic scope are
+composed into the effective profile for subsequent ranking/summarization, including after
+restart. Explicit global-level corrections override the base while active. Valid memories do
+not expire by age. V1 caps active preferences at 30 and active/pending preferences at 50 rather
+than automatically deleting older preferences. Advanced consolidation and adaptive weights are
+still future work.
+
+`/forget Pn` stops retrieving that memory and redacts its dedicated original/confirmation
+evidence records. It does not erase historical run/profile snapshots, evaluation exports,
+outbox payloads, or messages already in Telegram. Other independent base attributes, preferences,
+and article feedback remain. Forgotten or superseded memories are not automatically reactivated.
+
+For an explicitly confirmed preference provided outside Telegram, the local administrative
+import requires both the exact preference and its original confirmation/evidence:
+
+```sh
+.venv/bin/daily-tech --remember-preference 'YOUR_CONFIRMED_PREFERENCE' --preference-evidence 'ORIGINAL_CONFIRMATION_AND_CONTEXT'
+.venv/bin/daily-tech --preferences
+```
+
+This records `chat` provenance rather than pretending the message arrived through Telegram.
+Authorized original text and callback actions are stored as conversation evidence; completed
+update plans, preference changes, and replies are persisted transactionally so replay does not
+apply the same correction or vote twice.
+
+## Demo evaluation: frozen inputs, automated judging, and human ratings
 
 Create an evaluation snapshot before changing preference behavior:
 
@@ -274,7 +345,41 @@ selected slots out of three and available rating counts; partial averages are ex
 labelled. Rating deltas are withheld until both conditions have complete ratings for that
 dimension. A descriptive difference is not proof of causal improvement.
 
-For accuracy review, check the full saved source text, metadata, summaries, technical insights,
+For today's v1, human usefulness ratings plus automated source-support estimates and optional
+spot-checks are sufficient. Full manual claim/metadata review is optional; do not present missing
+human review or a model estimate as verified factual accuracy.
+
+Run the automated source-support judge on an existing evaluation attempt:
+
+```sh
+.venv/bin/daily-tech --eval-judge PATH_TO_EVALUATION_ATTEMPT_DIRECTORY --runtime-seconds 600
+```
+
+This uses `OPENAI_API_KEY` and makes one paid request per selected article per condition
+(nine for a three-condition comparison). The judge defaults to the generation model;
+set `OPENAI_JUDGE_MODEL` or pass `--model` to choose another compatible model. The report
+explicitly flags use of the same model because errors may be correlated. Human scores and
+condition labels are withheld from the judge. No retrieval, database updates, or Telegram sends occur.
+
+Each run saves a new `judges/<UUID>/result.json` with the rubric/version, judge/code identity,
+source-result/inventory hashes, verdicts, exact passages, validation flags, timings, and usage.
+`judge_latest.json` selects the latest finished attempt for the main report. Old attempts are
+preserved. `review.json` and generated briefs remain untouched. Report-only regeneration retains
+judge results without making model calls; an interrupted run leaves diagnostics in its own directory.
+
+The estimated support rate is **supported statements / factual statements**. The denominator
+includes contradicted and unverifiable statements; subjective-only statements are excluded.
+These are sentence drafts, not an audited atomic-claim inventory. All factual parts of a compound
+statement must be supported. Evidence must occur in the saved source; missing or invalid evidence
+downgrades the verdict to unverifiable. This check does not establish entailment. Failed groups
+suppress their condition's rate rather than disappearing from coverage. A source-support estimate
+does not establish whether the source is true, verify metadata, or measure personal usefulness.
+The report lists questionable claims for optional human spot-checks; the judge is not yet calibrated.
+Rubric v2 supplies the entire saved source as numbered passages and constrains evidence IDs in
+the response schema. The application copies the passages itself, avoiding model transcription errors.
+The first live v1-rubric attempt is preserved separately because many evidence quotations were paraphrased.
+
+For an optional comprehensive human accuracy review, check the full saved source text, metadata, summaries, technical insights,
 and relevance explanations. Draft claim rows use sentence splitting and may need to be split,
 added, or marked non-factual. Supported claims require a matching saved-source passage; that
 mechanical check alone does not establish semantic support. Contradicted/unverifiable/non-factual
@@ -303,9 +408,18 @@ A future corrected-profile comparison can be replayed with an explicit JSON prof
 .venv/bin/daily-tech --eval-replay PATH_TO_SNAPSHOT_JSON --eval-corrected-profile config/profile.json
 ```
 
-This adds a third condition in a new attempt and does not update the real profile. It does not
-prove conversational extraction or restart persistence; those checks will accompany the feedback
-increment. Until measured, the report labels the correction effect as unmeasured. One user and
+To preserve already-rated generic/current outputs and run only the corrected condition under
+the same editorial revision, use `--eval-add-corrected BASELINE_ATTEMPT_DIR` together with
+`--eval-corrected-profile FILE`. It creates a new attempt, carries original reviews with a
+provenance record, and leaves old files untouched. No accuracy labels are inferred for new summaries.
+After a ranking-policy change, export the same original source corpus under the new revision
+and replay all conditions. `--eval-seed-review PRIOR_REVIEW_JSON` can carry only prior article
+ratings by article ID after verifying identical saved bodies; it does not carry old model outputs
+or new-summary claim labels. The report distinguishes this from extending an unchanged baseline.
+Reassess carried ratings if your reading goals have changed.
+
+The replay does not update the real profile. It does not by itself prove conversational extraction
+or restart persistence; those are separate live and regression checks. One user and
 one corpus provide initial descriptive evidence, not a general benchmark or statistical claim.
 The current stage captures the baseline before adding Telegram feedback and preference updates.
 
@@ -405,12 +519,13 @@ and summarization; `llm.py` exposes a provider-neutral interface with an OpenAI 
 `storage.py` owns PostgreSQL access and migrations; `history.py` defines article identities
 for repeat filtering. `telegram.py` owns transport/rendering; `telegram_service.py` handles
 delivery and command dispatch; `telegram_storage.py` owns the outbox and polling state.
-Profile revision history records explicit JSON imports. Conversational memory extraction,
-feedback learning, deployed webhooks, scheduling, and web search are still future increments.
+Profile revision history records explicit JSON imports. `preferences.py` stores confirmed
+memories/evidence and article feedback; `preference_conversation.py` handles bounded interpretation
+and confirmation. Deployed webhooks, scheduling, and web search are still future increments.
 Database run snapshots are separate from any future LangGraph checkpoints.
 
-`evaluation*.py` provides isolated corpus export, editorial replay, and human-review metrics;
+`evaluation*.py` provides isolated corpus export, editorial replay, automated source-support estimates, and human-review metrics;
 these artifacts never enter production recommendation history or delivery.
 
-Next increment: explicit feedback and conversational preference updates, evaluated against the
-frozen baseline, then hosted webhooks and scheduled daily delivery.
+Next increment: spot-check automated judge findings as needed, then web-search fallback,
+hosted webhooks, and scheduled daily delivery. Comprehensive manual claim review can follow v1.

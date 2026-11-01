@@ -112,7 +112,14 @@ async def replay(
     conditions = [("generic", None), ("current", snapshot.profile)]
     if corrected_profile is not None:
         conditions.append(("corrected", corrected_profile))
+    existing = {condition.name for condition in result.conditions}
+    if result.conditions and (existing != {"generic", "current"} or corrected_profile is None):
+        raise ValueError(
+            "Only a generic/current baseline can be extended with one corrected condition"
+        )
     for name, ranking_profile in conditions:
+        if name in existing:
+            continue
         report = RunReport(
             started_at=datetime.now(UTC),
             status="failed",

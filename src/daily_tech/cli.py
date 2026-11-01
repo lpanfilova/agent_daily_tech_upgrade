@@ -17,6 +17,7 @@ from .evaluation_cli import execute_evaluation
 from .llm import OpenAIModel
 from .models import RunReport
 from .pipeline import run_pipeline, save_report
+from .preferences import PreferenceProposal, PreferenceStore
 from .retrieval import Fetcher
 from .storage import Repository, StorageError
 from .telegram import TelegramClient, TelegramError, TelegramSettings
@@ -38,9 +39,18 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--runtime-seconds", type=int, default=300)
     result.add_argument("--model", help="Overrides OPENAI_MODEL")
     result.add_argument(
+        "--preference-evidence",
+        help="Original confirmation/evidence for an explicit local preference import",
+    )
+    result.add_argument(
         "--eval-corrected-profile",
         type=Path,
         help="Evaluation-only corrected JSON profile; never updates the real profile",
+    )
+    result.add_argument(
+        "--eval-seed-review",
+        type=Path,
+        help="Carry prior human article ratings from the same corpus, with provenance",
     )
     result.add_argument("--no-db", action="store_true", help="Run in file-only mode")
     result.add_argument(
@@ -81,6 +91,19 @@ def parser() -> argparse.ArgumentParser:
         "--telegram-deliveries", action="store_true", help="Show recent Telegram delivery statuses"
     )
     actions.add_argument(
+        "--telegram-feedback-buttons",
+        action="store_true",
+        help="Add feedback buttons to recent confirmed article messages without resending them",
+    )
+    actions.add_argument(
+        "--preferences", action="store_true", help="Inspect persistent reading preferences"
+    )
+    actions.add_argument(
+        "--remember-preference",
+        metavar="TEXT",
+        help="Import an explicitly confirmed preference; requires --preference-evidence",
+    )
+    actions.add_argument(
         "--eval-freeze",
         nargs="?",
         const="latest",
@@ -94,18 +117,40 @@ def parser() -> argparse.ArgumentParser:
         help="Compare generic/current ranking on frozen inputs using OpenAI",
     )
     actions.add_argument(
+        "--eval-judge",
+        type=Path,
+        metavar="EVALUATION_DIR",
+        help="Estimate source support with a model; preserves human reviews and production state",
+    )
+    actions.add_argument(
         "--eval-report",
         type=Path,
         metavar="EVALUATION_DIR",
-        help="Recalculate evaluation report from saved human reviews",
+        help="Recalculate report from saved outputs, human reviews, and optional judge results",
+    )
+    actions.add_argument(
+        "--eval-add-corrected",
+        type=Path,
+        metavar="BASELINE_ATTEMPT_DIR",
+        help="Preserve a rated baseline and evaluate only a corrected profile",
     )
     return result
 
 
 async def execute(args: argparse.Namespace) -> int:
-    if args.eval_corrected_profile and not args.eval_replay:
-        raise ValueError("--eval-corrected-profile requires --eval-replay")
-    if args.eval_freeze or args.eval_replay or args.eval_report:
+    if args.eval_seed_review and not args.eval_replay:
+        raise ValueError("--eval-seed-review requires --eval-replay")
+    if args.preference_evidence and not args.remember_preference:
+        raise ValueError("--preference-evidence requires --remember-preference")
+    if args.eval_corrected_profile and not (args.eval_replay or args.eval_add_corrected):
+        raise ValueError("--eval-corrected-profile requires --eval-replay or --eval-add-corrected")
+    if (
+        args.eval_freeze
+        or args.eval_replay
+        or args.eval_report
+        or args.eval_add_corrected
+        or args.eval_judge
+    ):
         return await execute_evaluation(args)
     if args.telegram_check:
         settings = TelegramSettings.from_env(require_chat=False)
@@ -118,6 +163,7 @@ async def execute(args: argparse.Namespace) -> int:
         or args.telegram_poll_once
         or args.send_brief
         or args.telegram_deliveries
+        or args.telegram_feedback_buttons
     )
     db_action = (
         args.db_migrate
@@ -127,6 +173,8 @@ async def execute(args: argparse.Namespace) -> int:
         or args.show_run
         or args.import_run
         or telegram_action
+        or args.preferences
+        or args.remember_preference
     )
     if args.no_db:
         if db_action:
@@ -145,6 +193,9 @@ async def execute(args: argparse.Namespace) -> int:
         repo.require_migrations()
         if telegram_action:
             return await execute_telegram(args, repo)
+        if args.preferences:
+            print(PreferenceStore(repo).inspection())
+            return 0
         if args.show_profile:
             profile = repo.get_profile()
             print(profile.model_dump_json(indent=2) if profile else "No profile stored yet.")
@@ -160,6 +211,39 @@ async def execute(args: argparse.Namespace) -> int:
             print(repo.get_brief(args.show_run))
             return 0
         with repo.run_lock():
+            if args.remember_preference:
+                if not args.preference_evidence or not 1 <= len(args.remember_preference) <= 500:
+                    raise ValueError(
+                        "Provide a 1–500 character preference and its explicit confirmation with --preference-evidence"
+                    )
+                memories = PreferenceStore(repo)
+                key = (
+                    "chat:"
+                    + hashlib.sha256(
+                        (args.remember_preference + args.preference_evidence).encode()
+                    ).hexdigest()
+                )
+                with repo.connection.transaction():
+                    source = memories.record_message(
+                        key,
+                        args.preference_evidence,
+                        origin="chat",
+                        context={"confirmed_proposal": args.remember_preference},
+                    )
+                    proposal = PreferenceProposal(
+                        intent="preference",
+                        text=args.remember_preference,
+                        evidence_quote=args.remember_preference,
+                        topic=None,
+                        global_depth=None,
+                        supersedes=[],
+                        confidence=1,
+                        clarification="",
+                    )
+                    memory = memories.propose(source, proposal)
+                    memories.confirm(memory["preference_id"], source)
+                print(f"Confirmed preference P{memory['preference_id']} stored with its evidence.")
+                return 0
             if args.import_profile:
                 repo.set_profile(load_profile(args.import_profile), "explicit_import")
                 print("Profile imported and saved.")
@@ -199,7 +283,24 @@ async def execute_telegram(args, repo):
     async with httpx.AsyncClient() as http:
         client = TelegramClient(http, settings)
         bot = await client.get_me()
-        service = TelegramService(client, store, bot)
+        key, model = os.getenv("OPENAI_API_KEY", ""), os.getenv("OPENAI_MODEL", "")
+        factory = (
+            (
+                lambda: OpenAIModel(
+                    http, key, model, Limits(max_model_calls=2, max_output_tokens=1500)
+                )
+            )
+            if key and model
+            else None
+        )
+        service = TelegramService(client, store, bot, preference_model_factory=factory)
+        if args.telegram_feedback_buttons:
+            with store.lock(polling=True):
+                changed = await service.enable_feedback_buttons()
+            print(
+                f"Feedback buttons added to {changed} existing article messages. No brief was resent."
+            )
+            return 0
         if args.send_brief:
             report = (
                 repo.latest_report()

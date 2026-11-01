@@ -62,6 +62,13 @@ class TelegramClient:
                 "Telegram returned an unreadable response", uncertain=sending
             ) from None
         if not isinstance(data, dict) or data.get("ok") is not True or not response.is_success:
+            if (
+                method == "editMessageReplyMarkup"
+                and isinstance(data, dict)
+                and data.get("error_code") == 400
+                and "message is not modified" in data.get("description", "").lower()
+            ):
+                return True  # Idempotent retry after a lost edit acknowledgement.
             code = data.get("error_code") if isinstance(data, dict) else None
             code = code if isinstance(code, int) else response.status_code
             explicitly_rejected = (
@@ -83,24 +90,33 @@ class TelegramClient:
             raise TelegramError("Telegram returned an invalid bot identity", fatal=True)
         return bot
 
-    async def send(self, text):
+    async def send(self, text, reply_markup=None):
         if self.settings.chat_id is None:
             raise ValueError("No verified Telegram chat is configured")
         loop = asyncio.get_running_loop()
         if self.last_send_at is not None:
             await asyncio.sleep(max(0, 1.05 - (loop.time() - self.last_send_at)))
         self.last_send_at = loop.time()
-        message = await self.call(
-            "sendMessage",
-            {
-                "chat_id": self.settings.chat_id,
-                "text": text,
-                "link_preview_options": {"is_disabled": True},
-            },
-        )
+        payload = {
+            "chat_id": self.settings.chat_id,
+            "text": text,
+            "link_preview_options": {"is_disabled": True},
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        message = await self.call("sendMessage", payload)
         if not isinstance(message, dict) or not isinstance(message.get("message_id"), int):
             raise TelegramError("Telegram did not confirm a message ID", uncertain=True)
         return message["message_id"]
+
+    async def edit_markup(self, message_id, markup):
+        return await self.call(
+            "editMessageReplyMarkup",
+            {"chat_id": self.settings.chat_id, "message_id": message_id, "reply_markup": markup},
+        )
+
+    async def answer_callback(self, query_id):
+        await self.call("answerCallbackQuery", {"callback_query_id": query_id, "text": "Received"})
 
     async def updates(self, offset, *, timeout=20):
         updates = await self.call(
@@ -136,7 +152,7 @@ def split_text(text: str, limit=3500) -> list[str]:
     return result
 
 
-def brief_messages(report: RunReport) -> list[str]:
+def brief_parts(report: RunReport) -> list[tuple[str, int | None]]:
     if report.status not in ("complete", "partial") or not report.recommendations:
         raise ValueError("This run has no completed recommendations to deliver")
     minutes = sum(r.article.reading_minutes for r in report.recommendations)
@@ -146,7 +162,7 @@ def brief_messages(report: RunReport) -> list[str]:
     )
     if report.status == "partial":
         header += "\nA shorter selection met your reading criteria today."
-    messages = split_text(header)
+    messages = [(text, None) for text in split_text(header)]
     for index, rec in enumerate(report.recommendations, 1):
         a, s = rec.article, rec.summary
         if urlsplit(a.url).scheme != "https" or len(a.url) > 2000:
@@ -157,8 +173,26 @@ def brief_messages(report: RunReport) -> list[str]:
             + "\n".join(f"• {i.claim}" for i in s.insights)
             + f"\n\nWhy it matters\n{s.why_it_matters}"
         )
-        messages.extend(split_text(text))
+        chunks = split_text(text)
+        messages.extend(
+            (chunk, index if i == len(chunks) - 1 else None) for i, chunk in enumerate(chunks)
+        )
     return messages
+
+
+def brief_messages(report: RunReport) -> list[str]:
+    return [text for text, _ in brief_parts(report)]
+
+
+def feedback_buttons(run_id, position):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "👍 Like", "callback_data": f"fb:{run_id.hex}:{position}:up"},
+                {"text": "👎 Dislike", "callback_data": f"fb:{run_id.hex}:{position}:down"},
+            ]
+        ]
+    }
 
 
 def profile_messages(profile: Profile | None) -> list[str]:

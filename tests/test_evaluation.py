@@ -52,6 +52,8 @@ class EvaluationModel(FakeModel):
                         "quality": 4,
                         "topic": a["response_key"],
                         "reason": "Synthetic review",
+                        "violates_explicit_preferences": False,
+                        "constraint_reason": "",
                     }
                     for a in data["articles"]
                 }
@@ -230,6 +232,58 @@ def test_cli_freeze_replay_and_report_are_isolated_from_production(monkeypatch, 
     assert "Not measured" in report_path.read_text()
     assert result_path.read_bytes() == original_bytes
     assert len(result.conditions) == 2
+    review_path = result_path.parent / "review.json"
+    review_data = json.loads(review_path.read_text())
+    review_data["articles"][0]["relevance"] = 4
+    review_path.write_text(json.dumps(review_data))
+    corrected = tmp_path / "corrected.json"
+    corrected.write_text(
+        PROFILE.model_copy(update={"style": "Prioritize novice tutorials"}).model_dump_json()
+    )
+    original_result = result_path.read_bytes()
+    original_review = review_path.read_bytes()
+    old_reports = [c.report.model_dump(mode="json") for c in result.conditions]
+    args = parser().parse_args(
+        [
+            "--eval-add-corrected",
+            str(result_path.parent),
+            "--eval-corrected-profile",
+            str(corrected),
+            "--output",
+            str(tmp_path),
+        ]
+    )
+    assert asyncio.run(execute(args)) == 0
+    assert result_path.read_bytes() == original_result
+    assert review_path.read_bytes() == original_review
+    added = next(
+        p for p in tmp_path.glob("evaluations/*/attempts/*/result.json") if p != result_path
+    )
+    extension = load_result(added)
+    assert [c.name for c in extension.conditions] == ["generic", "current", "corrected"]
+    assert [c.report.model_dump(mode="json") for c in extension.conditions[:2]] == old_reports
+    new_review = json.loads((added.parent / "review.json").read_text())
+    known_id = review_data["articles"][0]["article_id"]
+    assert next(r for r in new_review["articles"] if r["article_id"] == known_id)["relevance"] == 4
+    assert (added.parent / "provenance.json").exists()
+    before = set(tmp_path.glob("evaluations/*/attempts/*/result.json"))
+    args = parser().parse_args(
+        [
+            "--eval-replay",
+            str(snapshot_path),
+            "--eval-seed-review",
+            str(review_path),
+            "--output",
+            str(tmp_path),
+        ]
+    )
+    assert asyncio.run(execute(args)) == 0
+    seeded = next(
+        p for p in tmp_path.glob("evaluations/*/attempts/*/result.json") if p not in before
+    )
+    assert json.loads((seeded.parent / "provenance.json").read_text())["kind"] == "ratings_only"
+    assert "all condition outputs were generated" in (seeded.parent / "report.md").read_text()
+    assert review_path.read_bytes() == original_review
     data = json.loads(result_path.read_text())
     data["model"] = "modified-model"
     result_path.write_text(json.dumps(data))

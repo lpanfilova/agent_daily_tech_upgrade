@@ -66,6 +66,31 @@ Summary schemas now constrain evidence to short excerpts constructed from source
 resolving failures caused by model-generated excerpts outside the word-count limit.
 Regression tests cover both constraints; semantic support remains the open work above.
 
+The first confirmed-preference comparison (`832c6d14-4826-47ca-8318-336f18abfff1`)
+still selected model-training research despite an explicit avoidance preference and
+regressed on the available human ratings. That failed attempt is preserved. Ranking now
+requires an explicit-preference violation assessment and excludes flagged candidates by
+setting relevance to zero. The assessment is model-generated; it does not prove compliance.
+The revised three-condition comparison (`36e91669-b13f-4494-a978-78f08b28ddb4`,
+snapshot `8f9648056505652d`) excludes the continual-learning article from the corrected
+selection. All eight unique articles are now rated. Compared with current, corrected mean
+relevance rose from 3.00 to 3.33 and difficulty fit from 3.00 to 3.67, while practical value
+fell from 2.67 to 2.33. This is a mixed result from one small comparison, not evidence of a
+reliable improvement. Claim support and metadata remain unreviewed; accuracy is unmeasured.
+
+### Automated source-support evidence
+
+Rubric v2 judge attempt `e2bc212a-b850-4da1-aff9-bdbb3ad5ed2b` assessed the same
+evaluation outputs using numbered frozen-source passages: generic 21/25 factual draft
+statements supported, current 15/18, corrected 20/25. All 74 statements were assessed;
+there were no invalid evidence references. Corrected claims C053, C056, C062, C065, and
+C066 were judged unverifiable, primarily because assertions about benefits for novice
+developers exceed the supplied source. These are uncalibrated same-model judgments, not
+human labels or real-world accuracy results. Source existence checks do not prove entailment.
+The initial free-quotation judge attempt is retained with its 21 transcription/validation
+flags; v2 prevents that copying failure by selecting source passage IDs. Optional human
+spot-checks and a separate held-out calibration set remain follow-up work, not a v1 blocker.
+
 ## MODEL-001: Investigate article-specific summary HTTP 400
 
 - **Status:** Open
@@ -82,7 +107,13 @@ The same article-specific rejection recurred in the `current` condition of evalu
 The condition still produced three articles. Its report flags token usage as incomplete
 because the rejected call did not return usage; the failed attempt remains in `result.json`.
 
-Follow up by recording sanitized provider error codes/parameters and checking the generated
-article-specific response schema. The current generic error does not establish the cause.
-Do not log API keys or authorization headers. Close after a regression check and a successful
-request for the affected article or a documented, actionable exclusion reason.
+Sanitized provider diagnostics are now recorded. The rejection recurred in evaluation
+`36e91669-b13f-4494-a978-78f08b28ddb4` and identified `invalid_json_schema`, parameter
+`text.format.schema`: a double quote in a source-derived `GroundedSummary.evidence`
+string literal is disallowed by the strict structured-output schema. The condition still
+completed using alternatives; failed-call token usage remains unavailable.
+
+Follow up by making the source-derived evidence schema compatible with these restrictions
+while preserving exact source attribution. Do not log API keys or authorization headers.
+Close after a regression check and a successful request for the affected article or a
+documented, actionable exclusion reason.

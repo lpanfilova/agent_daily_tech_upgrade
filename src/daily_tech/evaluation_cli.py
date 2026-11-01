@@ -6,13 +6,14 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 
 from .config import Limits, load_profile
 from .evaluation import (
     code_fingerprint,
+    digest,
     freeze_report,
     load_result,
     load_snapshot,
@@ -88,9 +89,30 @@ def write_report(directory: Path):
     )
     metrics = calculate_metrics(result, review)
     (directory / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    (directory / "report.md").write_text(
-        render_evaluation_report(snapshot, result, review, metrics), encoding="utf-8"
-    )
+    report_text = render_evaluation_report(snapshot, result, review, metrics)
+    from .evaluation_judge import load_judge, render_judge
+
+    judge = load_judge(directory, snapshot, result)
+    if judge:
+        metrics["automated_source_support"] = judge["metrics"]
+        (directory / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        report_text += render_judge(judge)
+    provenance = directory / "provenance.json"
+    if provenance.exists():
+        source = json.loads(provenance.read_text())
+        if source.get("kind") == "ratings_only":
+            report_text += (
+                f"\nPrior article ratings only were carried from evaluation {source['source_evaluation_id']}; "
+                "all condition outputs were generated under this revision. Reassess carried ratings if needs changed. "
+                "New selections and new-summary claims remain unreviewed until explicitly rated. See provenance.json.\n"
+            )
+        else:
+            report_text += (
+                f"\nBaseline reuse: generic/current outputs and prior article ratings were preserved from evaluation "
+                f"{source['source_evaluation_id']}. New article ratings and corrected-summary claim checks remain pending. "
+                "Reassess carried ratings if your reading needs changed. See provenance.json.\n"
+            )
+    (directory / "report.md").write_text(report_text, encoding="utf-8")
     return directory / "report.md"
 
 
@@ -99,7 +121,36 @@ async def replay_command(args):
         raise ValueError(
             "Replay profiles are frozen; use --eval-corrected-profile for a third condition"
         )
-    snapshot = load_snapshot(args.eval_replay)
+    previous_result = previous_review = None
+    seeded_review = None
+    if args.eval_seed_review:
+        seeded_review = EvaluationReview.model_validate_json(args.eval_seed_review.read_text())
+    if args.eval_add_corrected:
+        if not args.eval_corrected_profile:
+            raise ValueError("--eval-add-corrected requires --eval-corrected-profile")
+        snapshot = load_snapshot(args.eval_add_corrected / "snapshot.json")
+        previous_result = load_result(args.eval_add_corrected / "result.json")
+        previous_review = EvaluationReview.model_validate_json(
+            (args.eval_add_corrected / "review.json").read_text()
+        )
+        calculate_metrics(previous_result, previous_review)
+        if (
+            previous_result.snapshot_id != snapshot.snapshot_id
+            or previous_result.code_fingerprint != snapshot.code_fingerprint
+        ):
+            raise ValueError("Baseline result does not match its snapshot")
+        if {c.name for c in previous_result.conditions} != {"generic", "current"}:
+            raise ValueError("Select the original two-condition baseline to extend")
+    else:
+        snapshot = load_snapshot(args.eval_replay)
+    if seeded_review:
+        source_snapshot = load_snapshot(args.eval_seed_review.parent / "snapshot.json")
+        source_result = load_result(args.eval_seed_review.parent / "result.json")
+        calculate_metrics(source_result, seeded_review)
+        if {a.id: a.content_hash for a in source_snapshot.articles} != {
+            a.id: a.content_hash for a in snapshot.articles
+        }:
+            raise ValueError("Carried ratings must refer to the same frozen article bodies")
     if snapshot.code_fingerprint != code_fingerprint():
         raise ValueError(
             "Editorial code differs from the snapshot; export a new snapshot for this revision"
@@ -119,6 +170,17 @@ async def replay_command(args):
         started_at=datetime.now(UTC),
         summary_profile=snapshot.profile,
     )
+    if previous_result:
+        result = previous_result.model_copy(
+            deep=True,
+            update={
+                "evaluation_id": uuid4(),
+                "result_digest": "",
+                "started_at": datetime.now(UTC),
+                "completed_at": None,
+                "status": "running",
+            },
+        )
     directory = (
         args.output
         / "evaluations"
@@ -129,7 +191,9 @@ async def replay_command(args):
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "snapshot.json").write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
     print(
-        f"Replaying frozen articles for {'three' if corrected else 'two'} conditions. "
+        "Preserving the original baseline outputs and human ratings; running only the corrected condition."
+        if previous_result
+        else f"Replaying frozen articles for {'three' if corrected else 'two'} conditions. "
         f"At most {snapshot.limits.max_model_calls} model calls per condition; no delivery or production writes.",
         flush=True,
     )
@@ -151,6 +215,68 @@ async def replay_command(args):
         seal_result(result)
         (directory / "result.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
         review = create_review(result)
+        if seeded_review:
+            old = {r.article_id: r for r in seeded_review.articles}
+            used = {r.review_code for r in seeded_review.articles}
+            for index, row in enumerate(review.articles):
+                if row.article_id in old:
+                    review.articles[index] = old[row.article_id].model_copy(deep=True)
+                    review.articles[
+                        index
+                    ].notes += f"\nPrior human rating from {seeded_review.evaluation_id}; reassess if needs changed."
+                else:
+                    next_code = 1
+                    while f"A{next_code:02d}" in used:
+                        next_code += 1
+                    row.review_code = f"A{next_code:02d}"
+                    used.add(row.review_code)
+            (directory / "provenance.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "ratings_only",
+                        "source_evaluation_id": str(seeded_review.evaluation_id),
+                        "source_review_digest": digest(seeded_review),
+                    },
+                    indent=2,
+                )
+            )
+        if previous_review:
+            old = {r.article_id: r for r in previous_review.articles}
+            used = {r.review_code for r in previous_review.articles}
+            for index, row in enumerate(review.articles):
+                if row.article_id in old:
+                    review.articles[index] = old[row.article_id].model_copy(deep=True)
+                else:
+                    next_code = 1
+                    while f"A{next_code:02d}" in used:
+                        next_code += 1
+                    row.review_code = f"A{next_code:02d}"
+                    used.add(row.review_code)
+            old_metadata = {r.article_id: r for r in previous_review.metadata}
+            review.metadata = [
+                old_metadata.get(r.article_id, r).model_copy(deep=True) for r in review.metadata
+            ]
+            corrected_claims = [
+                c.model_copy(update={"claim_id": f"corrected:{c.claim_id}"})
+                for c in review.claims
+                if c.condition == "corrected"
+            ]
+            review.claims = [
+                c.model_copy(deep=True) for c in previous_review.claims
+            ] + corrected_claims
+            review.claim_inventory_checked.update(previous_review.claim_inventory_checked)
+            review.reviewer = previous_review.reviewer
+            (directory / "provenance.json").write_text(
+                json.dumps(
+                    {
+                        "source_evaluation_id": str(previous_result.evaluation_id),
+                        "source_result_digest": previous_result.result_digest,
+                        "source_review_digest": digest(previous_review),
+                        "note": "Original generic/current outputs and ratings preserved. Reassess carried article ratings if reading needs changed; no new-claim accuracy labels were inferred.",
+                    },
+                    indent=2,
+                )
+            )
         (directory / "review.json").write_text(review.model_dump_json(indent=2), encoding="utf-8")
         (directory / "review_guide.md").write_text(
             render_review_guide(result, review), encoding="utf-8"
@@ -173,10 +299,14 @@ async def replay_command(args):
 
 
 async def execute_evaluation(args):
+    if args.eval_judge:
+        from .evaluation_judge import judge_command
+
+        return await judge_command(args)
     if args.eval_freeze:
         return freeze_command(args)
-    if args.eval_replay:
+    if args.eval_replay or args.eval_add_corrected:
         return await replay_command(args)
     path = write_report(args.eval_report)
-    print(f"Recalculated from saved outputs and human review only: {path}")
+    print(f"Recalculated from saved outputs, human review, and any saved judge results: {path}")
     return 0

@@ -109,11 +109,17 @@ class Repository:
         finally:
             self.connection.execute("SELECT pg_advisory_unlock(%s)", (RUN_LOCK,))
 
-    def get_profile(self) -> Profile | None:
+    def get_base_profile(self) -> Profile | None:
         row = self.connection.execute(
             "SELECT payload FROM profiles WHERE profile_id = 'default'"
         ).fetchone()
         return Profile.model_validate(row["payload"]) if row else None
+
+    def get_profile(self) -> Profile | None:
+        from .preferences import PreferenceStore
+
+        base = self.get_base_profile()
+        return PreferenceStore(self).effective_profile(base) if base else None
 
     def set_profile(self, profile: Profile, origin: str):
         payload = Jsonb(profile.model_dump(mode="json"))

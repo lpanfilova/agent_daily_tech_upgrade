@@ -36,9 +36,13 @@ class TelegramStore:
             (bot_id, chat_id, key),
         ).fetchone()
 
-    def prepare(self, bot_id, chat_id, key, messages, run_id=None):
+    def prepare(self, bot_id, chat_id, key, messages, run_id=None, markups=None, positions=None):
         if not messages:
             raise ValueError("Delivery requires at least one message")
+        markups = markups or [None] * len(messages)
+        positions = positions or [None] * len(messages)
+        if len(markups) != len(messages) or len(positions) != len(messages):
+            raise ValueError("Message metadata does not match delivery parts")
         with self.connection.transaction():
             delivery_id = uuid4()
             inserted = self.connection.execute(
@@ -50,9 +54,15 @@ class TelegramStore:
             if inserted:
                 for index, body in enumerate(messages):
                     self.connection.execute(
-                        """INSERT INTO telegram_delivery_parts(delivery_id, part_index, body)
-                        VALUES (%s, %s, %s)""",
-                        (delivery_id, index, body),
+                        """INSERT INTO telegram_delivery_parts(delivery_id, part_index, body, reply_markup, article_position)
+                        VALUES (%s, %s, %s, %s, %s)""",
+                        (
+                            delivery_id,
+                            index,
+                            body,
+                            Jsonb(markups[index]) if markups[index] else None,
+                            positions[index],
+                        ),
                     )
             return self.delivery(bot_id, chat_id, key)
 
@@ -92,8 +102,9 @@ class TelegramStore:
             self.connection.execute(
                 """UPDATE telegram_delivery_parts SET status = %s,
                 message_id = %s, error = %s, attempts = attempts + %s, updated_at = now()
+                , buttons_installed_at = CASE WHEN %s = 'sent' AND reply_markup IS NOT NULL THEN now() ELSE buttons_installed_at END
                 WHERE delivery_id = %s AND part_index = %s""",
-                (status, message_id, error, int(status == "sending"), delivery_id, index),
+                (status, message_id, error, int(status == "sending"), status, delivery_id, index),
             )
             self.connection.execute(
                 "UPDATE telegram_deliveries SET status = %s, updated_at = now() WHERE delivery_id = %s",
@@ -149,4 +160,31 @@ class TelegramStore:
             count(p.part_index) AS parts, count(p.message_id) AS confirmed_parts
             FROM telegram_deliveries d JOIN telegram_delivery_parts p USING(delivery_id)
             GROUP BY d.delivery_id ORDER BY d.created_at DESC LIMIT 20""")
+        )
+
+    def feedback_target(self, bot_id, chat_id, message_id):
+        return self.connection.execute(
+            """SELECT d.run_id, p.article_position
+            FROM telegram_delivery_parts p JOIN telegram_deliveries d USING(delivery_id)
+            WHERE d.bot_id = %s AND d.chat_id = %s AND p.message_id = %s
+            AND p.status = 'sent' AND p.article_position IS NOT NULL""",
+            (bot_id, chat_id, message_id),
+        ).fetchone()
+
+    def recent_brief_deliveries(self, bot_id, chat_id):
+        return list(
+            self.connection.execute(
+                """SELECT * FROM telegram_deliveries
+            WHERE bot_id = %s AND chat_id = %s AND run_id IS NOT NULL
+            ORDER BY created_at DESC LIMIT 5""",
+                (bot_id, chat_id),
+            )
+        )
+
+    def set_buttons(self, delivery_id, index, position, markup, *, confirmed=False):
+        self.connection.execute(
+            """UPDATE telegram_delivery_parts SET article_position = %s,
+            reply_markup = %s, buttons_installed_at = CASE WHEN %s THEN now() ELSE buttons_installed_at END
+            WHERE delivery_id = %s AND part_index = %s""",
+            (position, Jsonb(markup), confirmed, delivery_id, index),
         )

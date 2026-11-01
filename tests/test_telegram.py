@@ -58,7 +58,7 @@ class FakeClient:
         self.sent = []
         self.failure = failure
 
-    async def send(self, text):
+    async def send(self, text, reply_markup=None):
         self.sent.append(text)
         if self.failure:
             raise self.failure
@@ -188,7 +188,7 @@ def test_delivery_is_idempotent_across_new_connections(database):
 
 def test_failed_part_resumes_without_repeating_confirmed_messages(database):
     class SecondPartFails(FakeClient):
-        async def send(self, text):
+        async def send(self, text, reply_markup=None):
             self.sent.append(text)
             if len(self.sent) == 2:
                 raise TelegramError("Telegram rejected sendMessage (code 429)")

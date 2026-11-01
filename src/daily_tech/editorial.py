@@ -23,10 +23,16 @@ async def rank(
     # Require one named assessment per candidate in the response schema. The application
     # attaches original IDs, so the model cannot omit a candidate or invent an ID.
     labels = {f"article_{i}": article for i, article in enumerate(articles)}
+    assessment_schema = create_model(
+        "ConstraintAwareAssessment",
+        __base__=RatingAssessment,
+        violates_explicit_preferences=(bool, ...),
+        constraint_reason=(str, Field(max_length=300)),
+    )
     response_schema = create_model(
         "CandidateAssessments",
         __base__=StrictModel,
-        **{label: (RatingAssessment, ...) for label in labels},
+        **{label: (assessment_schema, ...) for label in labels},
     )
     audience_policy = (
         "Use the supplied profile for relevance and difficulty fit."
@@ -34,6 +40,11 @@ async def rank(
         else "This is the non-personalized baseline: assess relevance as broad practical "
         "technical usefulness. Do not infer personal interests or proficiency."
     )
+    explicit = ""
+    if profile and "Saved explicit reading preferences" in profile.style:
+        explicit = profile.style.split("Saved explicit reading preferences", 1)[1].split(
+            "Recent article-specific feedback", 1
+        )[0]
     response = await model.generate(
         POLICY
         + audience_policy
@@ -42,9 +53,16 @@ Relevance is 0–5 for this user's interests and level;
 quality is 0–5 for substantive technical explanation, practical value, and originality. A novice
 needs definitions and approachable examples. Give pure promotions, events, and sponsored pieces
 quality below 3. Topic should identify the central subject so duplicate stories share a label.
+Set violates_explicit_preferences true when the article conflicts with an explicit 'avoid',
+'exclude', or 'only' restriction in explicit_preferences, even if its general topic is relevant.
+Give the specific violated restriction in constraint_reason. A soft 'prioritize' request alone
+is not an exclusion. When explicit_preferences is empty, return false and an empty reason.
+Judge the actual subject and methods: model-weight training, fine-tuning, and continual-learning
+research are distinct from runtime agent tools/state/memory, even when marketed as agent improvements.
 Reasons must refer to the supplied content. A trusted publisher alone does not ensure quality.""",
         {
             "profile": profile.model_dump() if profile else None,
+            "explicit_preferences": explicit,
             "articles": [
                 {
                     "response_key": label,
@@ -59,10 +77,15 @@ Reasons must refer to the supplied content. A trusted publisher alone does not e
         },
         response_schema,
     )
-    ratings = [
-        Rating(article_id=article.id, **getattr(response, label).model_dump())
-        for label, article in labels.items()
-    ]
+    ratings = []
+    for label, article in labels.items():
+        assessment = getattr(response, label).model_dump()
+        violates = assessment.pop("violates_explicit_preferences")
+        explanation = assessment.pop("constraint_reason")
+        if explicit and violates:
+            assessment["relevance"] = 0
+            assessment["reason"] = "Excluded by an explicit reading preference: " + explanation
+        ratings.append(Rating(article_id=article.id, **assessment))
     dates = {a.id: a.published_at for a in articles}
     return sorted(
         ratings,
