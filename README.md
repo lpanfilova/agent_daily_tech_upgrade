@@ -162,6 +162,17 @@ previous results.
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    User[User] <-->|Commands and briefs| Agent[Daily Tech Upgrade Agent]
+    Sources[Trusted publishers] -->|Articles| Agent
+    Agent <-->|Generation and evaluation| AI[OpenAI]
+    Agent <-->|Preferences, feedback and history| DB[(PostgreSQL)]
+```
+
+The agent handles research, personalization, brief preparation, delivery, and evaluation.
+Users interact through Telegram or the CLI.
+
 **Brief generation and delivery.** Run `daily-tech` to generate; use `--send-brief` or
 Telegram `/brief` to deliver the saved result. Solid arrows show steps; dashed arrows supply data.
 
